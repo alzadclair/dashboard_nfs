@@ -1,256 +1,569 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime
+import glob
 import os
+from datetime import datetime
 
-# Configuração da Página
+# =====================================================================
+# 1. CONFIGURAÇÃO DA PÁGINA E DESIGN SYSTEM ESTAPAR
+# =====================================================================
 st.set_page_config(
-    page_title="Dashboard de Entrada de NFs & Eficiência Operacional",
-    page_icon="📊",
+    page_title="ESTAPAR | Dashboard Executivo de Operações & NFs",
+    page_icon="🚗",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Estilização Customizada (Design Moderno & Intuitivo)
+# Estilização CSS Estável e Limpa
 st.markdown("""
 <style>
-    .metric-card {
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    
+    html, body, [class*="css"] {
+        font-family: 'Inter', sans-serif;
+    }
+    
+    .main {
+        background-color: #f8fafc;
+    }
+    
+    /* Sidebar Estapar */
+    [data-testid="stSidebar"] {
+        background-color: #002b49;
+        color: #ffffff;
+    }
+    [data-testid="stSidebar"] * {
+        color: #ffffff !important;
+    }
+    
+    /* Header Corporativo */
+    .estapar-header {
+        background: linear-gradient(90deg, #002b49 0%, #00406c 100%);
+        padding: 20px 25px;
+        border-radius: 12px;
+        color: white;
+        margin-bottom: 25px;
+        box-shadow: 0 4px 12px rgba(0, 43, 73, 0.15);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    .estapar-header h1 {
+        color: #ffffff !important;
+        font-size: 24px;
+        font-weight: 700;
+        margin: 0;
+    }
+    .estapar-header p {
+        color: #cbd5e1 !important;
+        margin: 4px 0 0 0;
+        font-size: 13px;
+    }
+    
+    /* Cards de KPI Executivos */
+    .kpi-container {
         background-color: #ffffff;
         border-radius: 10px;
-        padding: 15px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.05);
-        border: 1px solid #e2e8f0;
+        padding: 18px 20px;
+        border-left: 5px solid #008753;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+        border-top: 1px solid #f1f5f9;
+        border-right: 1px solid #f1f5f9;
+        border-bottom: 1px solid #f1f5f9;
     }
-    .status-badge-green {
-        background-color: #dcfce7; color: #15803d; font-weight: bold; padding: 6px 12px; border-radius: 20px;
+    .kpi-title {
+        font-size: 12px;
+        color: #64748b;
+        text-transform: uppercase;
+        font-weight: 700;
+        letter-spacing: 0.5px;
+        margin-bottom: 6px;
     }
-    .status-badge-yellow {
-        background-color: #fef9c3; color: #a16207; font-weight: bold; padding: 6px 12px; border-radius: 20px;
+    .kpi-value {
+        font-size: 24px;
+        color: #002b49;
+        font-weight: 700;
+        line-height: 1.2;
     }
-    .status-badge-red {
-        background-color: #fee2e2; color: #b91c1c; font-weight: bold; padding: 6px 12px; border-radius: 20px;
+    .kpi-subtext {
+        font-size: 12px;
+        margin-top: 6px;
+        font-weight: 500;
+    }
+    
+    /* Badges de Status */
+    .badge-green {
+        background-color: #dcfce7; color: #15803d; font-weight: 700; padding: 4px 10px; border-radius: 20px; font-size: 12px; display: inline-block;
+    }
+    .badge-yellow {
+        background-color: #fef9c3; color: #a16207; font-weight: 700; padding: 4px 10px; border-radius: 20px; font-size: 12px; display: inline-block;
+    }
+    .badge-red {
+        background-color: #fee2e2; color: #b91c1c; font-weight: 700; padding: 4px 10px; border-radius: 20px; font-size: 12px; display: inline-block;
+    }
+    
+    /* Ajustes em Botões */
+    .stButton>button {
+        background-color: #008753 !important;
+        color: white !important;
+        font-weight: 600 !important;
+        border-radius: 6px !important;
+        border: none !important;
+        width: 100%;
+        padding: 8px 16px !important;
+    }
+    .stButton>button:hover {
+        background-color: #00663f !important;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# Carga dos Dados (Simulação/Data Warehouse Parquet)
+# Logo Handler com Fallback seguro
+LOCAL_LOGO_PATH = "assets/estapar_logo.png"
+
+if os.path.exists(LOCAL_LOGO_PATH):
+    st.sidebar.image(LOCAL_LOGO_PATH, use_container_width=True)
+else:
+    st.sidebar.markdown("## 🚗 **ESTAPAR**")
+
+st.sidebar.markdown("---")
+
+# =====================================================================
+# 2. ENGINE DE CARREGAMENTO & TRATAMENTO DE DADOS MULTI-PLANILHA
+# =====================================================================
 @st.cache_data(ttl=300)
-def load_data():
-    if os.path.exists("data_warehouse.parquet"):
-        df = pd.read_parquet("data_warehouse.parquet")
+def carregar_e_tratar_dados(caminho_pasta="."):
+    arquivos_excel = glob.glob(os.path.join(caminho_pasta, "*.xlsx")) + glob.glob(os.path.join(caminho_pasta, "*.xls"))
+    
+    if not arquivos_excel:
+        return pd.DataFrame()
+
+    lista_dfs = []
+    
+    for arquivo in arquivos_excel:
+        nome_arquivo = os.path.basename(arquivo)
+        try:
+            excel_file = pd.ExcelFile(arquivo)
+            for aba in excel_file.sheet_names:
+                df_aba = pd.read_excel(excel_file, sheet_name=aba)
+                if not df_aba.empty:
+                    df_aba['Origem_Arquivo'] = nome_arquivo
+                    df_aba['Origem_Aba'] = aba
+                    lista_dfs.append(df_aba)
+        except Exception:
+            pass
+
+    if not lista_dfs:
+        return pd.DataFrame()
+
+    df_raw = pd.concat(lista_dfs, ignore_index=True)
+
+    # Padronização e Normalização de Colunas
+    cols_map = {}
+    for col in df_raw.columns:
+        c_lower = str(col).lower().strip()
+        if 'fornecedor' in c_lower or 'razao' in c_lower or 'razão' in c_lower:
+            cols_map[col] = 'Fornecedor'
+        elif 'valor' in c_lower or 'total' in c_lower or 'montante' in c_lower:
+            cols_map[col] = 'Valor_Total'
+        elif 'emiss' in c_lower or 'data' in c_lower:
+            cols_map[col] = 'Data_Emissao'
+        elif 'diverg' in c_lower or 'inconsist' in c_lower or 'erro' in c_lower:
+            cols_map[col] = 'Divergencia'
+        elif 'numero' in c_lower or 'número' in c_lower or 'nf' in c_lower or c_lower == 'id':
+            cols_map[col] = 'Numero_NF'
+
+    df_clean = df_raw.rename(columns=cols_map)
+    df_clean = df_clean.loc[:, ~df_clean.columns.duplicated()]
+
+    # Tratamento de Colunas Essenciais
+    if 'Fornecedor' not in df_clean.columns:
+        df_clean['Fornecedor'] = 'Não Informado'
     else:
-        # Carga do Dataset de Exemplo (Análise Anterior)
-        df = pd.read_excel("Documentos_Fiscais_20260818.xlsx")
-        df['Valor_Limpo'] = pd.to_numeric(df['Valor Total'].astype(str).str.replace(',', '.'), errors='coerce').fillna(0)
-        df['Data_Emissao'] = pd.to_datetime(df['Data de Emissão'], dayfirst=True, errors='coerce')
-        df['Ano_Mes'] = df['Data_Emissao'].dt.to_period('M').astype(str)
-        df['Tem_Divergencia'] = df['Divergências'].notnull() & (df['Divergências'].astype(str).str.strip() != '')
-        df['Divergencia_Classificada'] = df['Divergências'].fillna('Sem Divergência')
-    return df
+        if isinstance(df_clean['Fornecedor'], pd.DataFrame):
+            df_clean['Fornecedor'] = df_clean['Fornecedor'].iloc[:, 0]
+        df_clean['Fornecedor'] = df_clean['Fornecedor'].fillna('Não Informado').astype(str).str.strip()
 
-df = load_data()
+    if 'Valor_Total' in df_clean.columns:
+        if isinstance(df_clean['Valor_Total'], pd.DataFrame):
+            df_clean['Valor_Total'] = df_clean['Valor_Total'].iloc[:, 0]
+        df_clean['Valor_Limpo'] = (
+            df_clean['Valor_Total']
+            .astype(str)
+            .str.replace('R$', '', regex=False)
+            .str.replace('.', '', regex=False)
+            .str.replace(',', '.', regex=False)
+            .str.strip()
+        )
+        df_clean['Valor_Limpo'] = pd.to_numeric(df_clean['Valor_Limpo'], errors='coerce').fillna(0.0)
+    else:
+        df_clean['Valor_Limpo'] = 0.0
 
-# Sidebar - Filtros de Controle
-st.sidebar.title("🔍 Filtros & Integração")
-meses_disponiveis = sorted(df['Ano_Mes'].dropna().unique(), reverse=True)
-mes_selecionado = st.sidebar.selectbox("Mês de Referência:", meses_disponiveis, index=0)
+    if 'Data_Emissao' in df_clean.columns:
+        if isinstance(df_clean['Data_Emissao'], pd.DataFrame):
+            df_clean['Data_Emissao'] = df_clean['Data_Emissao'].iloc[:, 0]
+        df_clean['Data_Emissao'] = pd.to_datetime(df_clean['Data_Emissao'], dayfirst=True, errors='coerce')
+        df_clean['Ano_Mes'] = df_clean['Data_Emissao'].dt.to_period('M').astype(str).replace('NaT', 'S/D')
+        df_clean['Ano'] = df_clean['Data_Emissao'].dt.year.fillna(0).astype(int).astype(str).replace('0', 'S/D')
+    else:
+        df_clean['Data_Emissao'] = pd.NaT
+        df_clean['Ano_Mes'] = 'S/D'
+        df_clean['Ano'] = 'S/D'
 
-# Filtragem de Dados
-df_mes = df[df['Ano_Mes'] == mes_selecionado]
-df_historico = df[df['Ano_Mes'] <= mes_selecionado]
+    if 'Divergencia' in df_clean.columns:
+        if isinstance(df_clean['Divergencia'], pd.DataFrame):
+            df_clean['Divergencia'] = df_clean['Divergencia'].iloc[:, 0]
+        df_clean['Tem_Divergencia'] = (
+            df_clean['Divergencia'].notnull() & 
+            (df_clean['Divergencia'].astype(str).str.strip().str.lower() != 'sem divergência') &
+            (df_clean['Divergencia'].astype(str).str.strip() != '') &
+            (df_clean['Divergencia'].astype(str).str.strip() != 'nan')
+        )
+        df_clean['Divergencia_Classificada'] = np.where(
+            df_clean['Tem_Divergencia'], 
+            df_clean['Divergencia'].astype(str).str.strip(), 
+            'Sem Divergência'
+        )
+    else:
+        df_clean['Tem_Divergencia'] = False
+        df_clean['Divergencia_Classificada'] = 'Sem Divergência'
 
-# Navegação Principal (7 Abas)
+    return df_clean
+
+df_master = carregar_e_tratar_dados()
+
+if df_master.empty:
+    st.error("Nenhuma planilha válida foi encontrada na pasta. Adicione os arquivos .xlsx ou .xls para continuar.")
+    st.stop()
+
+# =====================================================================
+# 3. SISTEMA DE FILTROS INTELIGENTE
+# =====================================================================
+st.sidebar.title("⚙️ Filtros Operacionais")
+
+def reset_filtros():
+    for key in list(st.session_state.keys()):
+        if key.startswith("fltr_"):
+            st.session_state[key] = ["Todos"]
+
+if st.sidebar.button("🔄 Restaurar Filtros Padrão"):
+    reset_filtros()
+
+anos_disponiveis = ["Todos"] + sorted([a for a in df_master['Ano'].unique() if a != 'S/D'], reverse=True)
+sel_ano = st.sidebar.multiselect("Ano de Emissão:", anos_disponiveis, default=["Todos"], key="fltr_ano")
+
+meses_disponiveis = ["Todos"] + sorted([m for m in df_master['Ano_Mes'].unique() if m != 'S/D'], reverse=True)
+sel_mes = st.sidebar.multiselect("Mês/Ano de Referência:", meses_disponiveis, default=["Todos"], key="fltr_mes")
+
+fornecedores_unicos = ["Todos"] + sorted(df_master['Fornecedor'].unique().tolist())
+sel_fornecedor = st.sidebar.multiselect("Fornecedor:", fornecedores_unicos, default=["Todos"], key="fltr_fornecedor")
+
+div_unicas = ["Todos"] + sorted(df_master['Divergencia_Classificada'].unique().tolist())
+sel_div = st.sidebar.multiselect("Classificação da Divergência:", div_unicas, default=["Todos"], key="fltr_div")
+
+# Aplicação Integrada dos Filtros ao DataFrame
+df_filtrado = df_master.copy()
+
+if "Todos" not in sel_ano and len(sel_ano) > 0:
+    df_filtrado = df_filtrado[df_filtrado['Ano'].isin(sel_ano)]
+
+if "Todos" not in sel_mes and len(sel_mes) > 0:
+    df_filtrado = df_filtrado[df_filtrado['Ano_Mes'].isin(sel_mes)]
+
+if "Todos" not in sel_fornecedor and len(sel_fornecedor) > 0:
+    df_filtrado = df_filtrado[df_filtrado['Fornecedor'].isin(sel_fornecedor)]
+
+if "Todos" not in sel_div and len(sel_div) > 0:
+    df_filtrado = df_filtrado[df_filtrado['Divergencia_Classificada'].isin(sel_div)]
+
+# =====================================================================
+# 4. CABEÇALHO EXECUTIVO E KPIS PRINCIPAIS
+# =====================================================================
+st.markdown(f"""
+<div class="estapar-header">
+    <div>
+        <h1>ESTAPAR — Gestão de Operações & Entrada de NFs</h1>
+        <p>Monitoramento de Conformidade Fiscal, Retrabalho e Performance de Fornecedores</p>
+    </div>
+    <div style="text-align: right;">
+        <span style="background: rgba(255,255,255,0.15); padding: 6px 14px; border-radius: 20px; font-size: 12px; font-weight: 600;">
+            🟢 Base Sincronizada: {len(df_filtrado):,} registros
+        </span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+# Cálculo dos Indicadores Globais
+total_nfs = len(df_filtrado)
+valor_total_bruto = df_filtrado['Valor_Limpo'].sum()
+com_div = df_filtrado['Tem_Divergencia'].sum()
+sem_div = total_nfs - com_div
+
+pct_ftt = (sem_div / total_nfs * 100) if total_nfs > 0 else 0.0
+pct_retrabalho = (com_div / total_nfs * 100) if total_nfs > 0 else 0.0
+
+if pct_retrabalho < 18:
+    status_badge = '<span class="badge-green">🟢 PROCESSO SAUDÁVEL</span>'
+elif pct_retrabalho <= 25:
+    status_badge = '<span class="badge-yellow">🟡 REQUER ATENÇÃO</span>'
+else:
+    status_badge = '<span class="badge-red">🔴 CRÍTICO</span>'
+
+k1, k2, k3, k4, k5 = st.columns(5)
+
+with k1:
+    st.markdown(f"""
+    <div class="kpi-container">
+        <div class="kpi-title">Total de NFs Processadas</div>
+        <div class="kpi-value">{total_nfs:,}</div>
+        <div class="kpi-subtext" style="color:#64748b;">Volume Total Filtrado</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with k2:
+    st.markdown(f"""
+    <div class="kpi-container">
+        <div class="kpi-title">Montante Total (R$)</div>
+        <div class="kpi-value">R$ {valor_total_bruto:,.2f}</div>
+        <div class="kpi-subtext" style="color:#64748b;">Valor Bruto de Entradas</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with k3:
+    st.markdown(f"""
+    <div class="kpi-container">
+        <div class="kpi-title">Conformidade (FTT)</div>
+        <div class="kpi-value" style="color: #008753;">{pct_ftt:.1f}%</div>
+        <div class="kpi-subtext" style="color:#15803d;">Primeira Passagem Direta</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with k4:
+    st.markdown(f"""
+    <div class="kpi-container">
+        <div class="kpi-title">Taxa de Retrabalho</div>
+        <div class="kpi-value" style="color: #b91c1c;">{pct_retrabalho:.1f}%</div>
+        <div class="kpi-subtext" style="color:#b91c1c;">{com_div:,} NFs c/ Divergência</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with k5:
+    st.markdown(f"""
+    <div class="kpi-container">
+        <div class="kpi-title">Saúde Operacional</div>
+        <div style="margin-top: 8px;">{status_badge}</div>
+        <div class="kpi-subtext" style="color:#64748b;">Métrica Consolidada</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# =====================================================================
+# 5. NAVEGAÇÃO PRINCIPAL (ABAS DA APLICAÇÃO)
+# =====================================================================
 tab_names = [
-    "🏠 Visão Geral", 
-    "🔎 Divergências", 
+    "🏠 Visão Geral & IA", 
+    "🔎 Divergências (Pareto)", 
     "🏢 Fornecedores", 
-    "📈 Evolução", 
-    "🎯 Melhorias", 
-    "🧠 Análises da IA", 
-    "⚙️ Integração"
+    "📈 Evolução Temporal", 
+    "🎯 Plano de Ação", 
+    "⚙️ Base de Dados Integração"
 ]
-selected_tab = st.radio("", tab_names, horizontal=True)
+t_geral, t_div, t_forn, t_evol, t_acao, t_data = st.tabs(tab_names)
 
-# -----------------------------------------------------------------------------
-# ABA 1: VISÃO GERAL
-# -----------------------------------------------------------------------------
-if selected_tab == "🏠 Visão Geral":
-    st.title("🏠 Visão Geral da Operação")
+# ---------------------------------------------------------------------
+# ABA 1: VISÃO GERAL & DIAGNÓSTICO IA
+# ---------------------------------------------------------------------
+with t_geral:
+    st.subheader("💡 Diagnóstico Estratégico do Analista Virtual de Operações")
     
-    # Cálculo das Métricas Principais
-    total_nfs = len(df_mes)
-    com_div = df_mes['Tem_Divergencia'].sum()
-    sem_div = total_nfs - com_div
-    pct_ftt = (sem_div / total_nfs * 100) if total_nfs > 0 else 0
-    pct_retrabalho = (com_div / total_nfs * 100) if total_nfs > 0 else 0
-
-    # Mês Anterior para Comparação
-    idx_atual = meses_disponiveis.index(mes_selecionado)
-    if idx_atual < len(meses_disponiveis) - 1:
-        mes_ant = meses_disponiveis[idx_atual + 1]
-        df_ant = df[df['Ano_Mes'] == mes_ant]
-        pct_ret_ant = (df_ant['Tem_Divergencia'].sum() / len(df_ant) * 100) if len(df_ant) > 0 else 0
-        var_mom = pct_retrabalho - pct_ret_ant
-    else:
-        var_mom = 0.0
-
-    # Classificação Automática da Saúde do Processo
-    if pct_retrabalho < 18 and var_mom <= 0:
-        status_html = '<span class="status-badge-green">🟢 PROCESSO SAUDÁVEL</span>'
-        status_txt = "Melhoria consistente no fluxo sem intervenção manual."
-    elif pct_retrabalho <= 25:
-        status_html = '<span class="status-badge-yellow">🟡 PROCESSO REQUER ATENÇÃO</span>'
-        status_txt = "Estabilidade ou leve alta de erros cadastrais/sistêmicos."
-    else:
-        status_html = '<span class="status-badge-red">🔴 PROCESSO CRÍTICO</span>'
-        status_txt = "Alto índice de retrabalho exigindo correção imediata de Pedidos."
-
-    # KPIs no Topo
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("📥 Entradas (Total NFs)", f"{total_nfs:,}")
-    c2.metric("✅ Conformidade (FTT)", f"{pct_ftt:.1f}%")
-    c3.metric("🔧 Retrabalho (%)", f"{pct_retrabalho:.1f}%", f"{var_mom:+.1f}% MoM", delta_color="inverse")
-    c4.metric("🔄 Correções (NFs)", f"{com_div:,}")
-    c5.markdown(f"**Saúde do Processo**<br>{status_html}", unsafe_allow_html=True)
-
-    st.markdown("---")
-
-    # Card Narrativo do Analista Virtual
-    st.subheader("💡 Diagnóstico do Analista Virtual de IA")
     st.info(f"""
-    **Status Geral ({mes_selecionado}):** {status_txt}  
-    * **[DADO REVELADO]:** Foram processadas **{total_nfs:,} NFs** (R$ {df_mes['Valor_Limpo'].sum():,.2f}). O índice de retrabalho fechou em **{pct_retrabalho:.1f}%** ({com_div} NFs com necessidade de alteração de PC).
-    * **[INTERPRETAÇÃO DE CAUSA]:** A principal causa de travamento continua sendo a ausência de vinculo direto entre o Pedido de Compras no Oracle e a Tag `<xPed>` da Nota Fiscal, representando mais de 56% das incorreções.
-    * **[RECOMENDAÇÃO PRÁTICA]:** Ativar a validação de pré-emissão na entrada da API para fornecedores recorrentes.
+    * **[DADO REVELADO]:** A amostra analisada contém **{total_nfs:,} NFs** somando **R$ {valor_total_bruto:,.2f}**. Deste total, **{pct_retrabalho:.1f}% ({com_div} NFs)** apresentaram divergências exigindo tratamento ou refatoração do Pedido de Compras.
+    * **[INTERPRETAÇÃO DE CAUSA]:** As desconformidades concentram-se na ausência de inclusão antecipada da tag `<xPed>` pelos fornecedores recorrentes e em inconsistências na Conta Integrador Compras do ERP.
+    * **[RECOMENDAÇÃO PRÁTICA]:** Estabelecer trava de pré-validação na entrada da API para parceiros com taxa de retrabalho superior a 20%.
     """)
-
-# -----------------------------------------------------------------------------
-# ABA 2: DIVERGÊNCIAS (PARETO)
-# -----------------------------------------------------------------------------
-elif selected_tab == "🔎 Divergências":
-    st.title("🔎 Análise de Divergências e Causa Raiz")
     
-    div_counts = df_mes[df_mes['Tem_Divergencia']]['Divergencia_Classificada'].value_counts().reset_index()
-    div_counts.columns = ['Motivo', 'Quantidade']
-    div_counts['Pct'] = (div_counts['Quantidade'] / div_counts['Quantidade'].sum()) * 100
-    div_counts['Pct_Acumulado'] = div_counts['Pct'].cumsum()
+    col_g1, col_g2 = st.columns(2)
+    with col_g1:
+        st.markdown("**Distribuição de Processamento (FTT vs Retrabalho)**")
+        df_pie = pd.DataFrame({
+            'Status': ['Sem Divergência (FTT)', 'Com Divergência'],
+            'Qtd': [sem_div, com_div]
+        })
+        fig_pie = px.pie(
+            df_pie, names='Status', values='Qtd', hole=0.45,
+            color='Status', color_discrete_map={'Sem Divergência (FTT)': '#008753', 'Com Divergência': '#dc2626'}
+        )
+        fig_pie.update_layout(margin=dict(t=20, b=20, l=20, r=20), height=300)
+        st.plotly_chart(fig_pie, use_container_width=True)
 
-    # Gráfico de Pareto (Plotly)
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        x=div_counts['Motivo'], y=div_counts['Quantidade'],
-        name="Quantidade de Divergências", marker_color="#3b82f6"
-    ))
-    fig.add_trace(go.Scatter(
-        x=div_counts['Motivo'], y=div_counts['Pct_Acumulado'],
-        name="% Acumulado", yaxis="y2", color="#ea580c", mode="lines+markers+text",
-        text=[f"{v:.1f}%" for v in div_counts['Pct_Acumulado']], textposition="top center"
-    ))
-    fig.update_layout(
-        title="Gráfico de Pareto: Poucos Problemas, Muito Impacto",
-        yaxis=dict(title="Quantidade"),
-        yaxis2=dict(title="% Acumulado", overlaying="y", side="right", range=[0, 110]),
-        legend=dict(x=0.6, y=1.1, orientation="h")
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    with col_g2:
+        st.markdown("**Top 5 Fornecedores por Volume Financeiro**")
+        top_val_forn = df_filtrado.groupby('Fornecedor')['Valor_Limpo'].sum().reset_index().sort_values('Valor_Limpo', ascending=False).head(5)
+        fig_top_val = px.bar(
+            top_val_forn, x='Valor_Limpo', y='Fornecedor', orientation='h', text_auto='.2s',
+            color_discrete_sequence=['#002b49']
+        )
+        fig_top_val.update_layout(
+            yaxis=dict(autorange="reversed"), xaxis_title="Valor Total (R$)", yaxis_title="", 
+            margin=dict(t=20, b=20, l=20, r=20), height=300
+        )
+        st.plotly_chart(fig_top_val, use_container_width=True)
 
-    # Destaque de Pareto
-    top_3_pct = div_counts.head(3)['Pct'].sum()
-    st.warning(f"⚡ **Princípio de Pareto:** As 3 principais causas acima representam **{top_3_pct:.1f}% de todo o retrabalho** gerado no mês.")
+# ---------------------------------------------------------------------
+# ABA 2: DIVERGÊNCIAS (PARETO)
+# ---------------------------------------------------------------------
+with t_div:
+    st.subheader("🔎 Análise de Divergências e Diagrama de Pareto")
+    
+    df_div_only = df_filtrado[df_filtrado['Tem_Divergencia']]
+    
+    if df_div_only.empty:
+        st.success("🎉 Nenhuma divergência encontrada no recorte de dados selecionado!")
+    else:
+        div_counts = df_div_only['Divergencia_Classificada'].value_counts().reset_index()
+        div_counts.columns = ['Motivo', 'Quantidade']
+        div_counts['Pct'] = (div_counts['Quantidade'] / div_counts['Quantidade'].sum()) * 100
+        div_counts['Pct_Acumulado'] = div_counts['Pct'].cumsum()
 
-# -----------------------------------------------------------------------------
-# ABA 3: FORNECEDORES
-# -----------------------------------------------------------------------------
-elif selected_tab == "🏢 Fornecedores":
-    st.title("🏢 Concentração de Retrabalho por Fornecedor")
+        fig_pareto = go.Figure()
+        fig_pareto.add_trace(go.Bar(
+            x=div_counts['Motivo'], y=div_counts['Quantidade'],
+            name="Qtd Divergências", marker_color="#002b49"
+        ))
+        fig_pareto.add_trace(go.Scatter(
+            x=div_counts['Motivo'], 
+            y=div_counts['Pct_Acumulado'],
+            name="% Acumulado", 
+            yaxis="y2", 
+            mode="lines+markers+text",
+            line=dict(color="#ea580c"),
+            marker=dict(color="#ea580c"),
+            text=[f"{v:.1f}%" for v in div_counts['Pct_Acumulado']], 
+            textposition="top center"
+        ))
+        fig_pareto.update_layout(
+            title="Pareto de Causa Raiz de Divergências",
+            yaxis=dict(title="Quantidade de NFs"),
+            yaxis2=dict(title="% Acumulado", overlaying="y", side="right", range=[0, 110]),
+            legend=dict(x=0.01, y=1.15, orientation="h"),
+            margin=dict(t=40, b=20, l=20, r=20), height=400
+        )
+        st.plotly_chart(fig_pareto, use_container_width=True)
 
-    forn_df = df_mes.groupby('Razão Social Fornecedor').agg(
-        Total_NFs=('ID', 'count'),
+        top_3_pct = div_counts.head(3)['Pct'].sum()
+        st.warning(f"⚡ **Regra de Impacto 80/20:** As 3 principais razões respondem por **{top_3_pct:.1f}%** de todo o retrabalho operacional.")
+
+# ---------------------------------------------------------------------
+# ABA 3: FORNECEDORES (Sem dependência de matplotlib / background_gradient)
+# ---------------------------------------------------------------------
+with t_forn:
+    st.subheader("🏢 Ranking e Performance da Base de Fornecedores")
+    
+    forn_df = df_filtrado.groupby('Fornecedor').agg(
+        Total_NFs=('Valor_Limpo', 'count'),
         NFs_Divergentes=('Tem_Divergencia', 'sum'),
         Valor_Total=('Valor_Limpo', 'sum')
     ).reset_index()
+    
     forn_df['Pct_Retrabalho'] = (forn_df['NFs_Divergentes'] / forn_df['Total_NFs']) * 100
-    forn_df = forn_df.sort_values(by='Pct_Retrabalho', ascending=False)
+    forn_df = forn_df.sort_values(by='Total_NFs', ascending=False)
 
     st.dataframe(
         forn_df.style.format({
+            'Total_NFs': '{:,}',
+            'NFs_Divergentes': '{:,}',
             'Valor_Total': 'R$ {:,.2f}',
             'Pct_Retrabalho': '{:.2f}%'
-        }).background_gradient(subset=['Pct_Retrabalho'], cmap='YlOrRd'),
-        use_container_width=True
+        }),
+        use_container_width=True, height=400
     )
 
-# -----------------------------------------------------------------------------
-# ABA 4: EVOLUÇÃO
-# -----------------------------------------------------------------------------
-elif selected_tab == "📈 Evolução":
-    st.title("📈 Evolução Histórica e Tendência (Últimos Meses)")
+# ---------------------------------------------------------------------
+# ABA 4: EVOLUÇÃO TEMPORAL
+# ---------------------------------------------------------------------
+with t_evol:
+    st.subheader("📈 Evolução Histórica e Tendência MoM")
+    
+    df_temp = df_filtrado[df_filtrado['Ano_Mes'] != 'S/D']
+    
+    if df_temp.empty:
+        st.warning("Não há informações temporais suficientes para exibir a evolução.")
+    else:
+        monthly_hist = df_temp.groupby('Ano_Mes').agg(
+            Total_NFs=('Valor_Limpo', 'count'),
+            Divergentes=('Tem_Divergencia', 'sum')
+        ).reset_index().sort_values('Ano_Mes')
+        
+        monthly_hist['Pct_Retrabalho'] = (monthly_hist['Divergentes'] / monthly_hist['Total_NFs']) * 100
+        monthly_hist['Pct_FTT'] = 100 - monthly_hist['Pct_Retrabalho']
 
-    monthly_hist = df_historico.groupby('Ano_Mes').agg(
-        Total_NFs=('ID', 'count'),
-        Divergentes=('Tem_Divergencia', 'sum')
-    ).reset_index()
-    monthly_hist['Pct_Retrabalho'] = (monthly_hist['Divergentes'] / monthly_hist['Total_NFs']) * 100
-    monthly_hist['Pct_FTT'] = 100 - monthly_hist['Pct_Retrabalho']
+        fig_evol = go.Figure()
+        fig_evol.add_trace(go.Bar(
+            x=monthly_hist['Ano_Mes'], 
+            y=monthly_hist['Total_NFs'], 
+            name="Volume NFs", 
+            marker_color="#cbd5e1"
+        ))
+        fig_evol.add_trace(go.Scatter(
+            x=monthly_hist['Ano_Mes'], 
+            y=monthly_hist['Pct_Retrabalho'], 
+            name="% Retrabalho", 
+            yaxis="y2", 
+            mode="lines+markers",
+            line=dict(color="#dc2626", width=3)
+        ))
+        fig_evol.add_trace(go.Scatter(
+            x=monthly_hist['Ano_Mes'], 
+            y=monthly_hist['Pct_FTT'], 
+            name="% FTT", 
+            yaxis="y2", 
+            mode="lines+markers",
+            line=dict(color="#008753", width=3, dash="dash")
+        ))
 
-    fig_evol = go.Figure()
-    fig_evol.add_trace(go.Bar(x=monthly_hist['Ano_Mes'], y=monthly_hist['Total_NFs'], name="Volume Total NFs", marker_color="#cbd5e1"))
-    fig_evol.add_trace(go.Scatter(x=monthly_hist['Ano_Mes'], y=monthly_hist['Pct_Retrabalho'], name="% Retrabalho", yaxis="y2", line=dict(color="#dc2626", width=3)))
-    fig_evol.add_trace(go.Scatter(x=monthly_hist['Ano_Mes'], y=monthly_hist['Pct_FTT'], name="% Conformidade (FTT)", yaxis="y2", line=dict(color="#16a34a", width=3, dash="dash")))
+        fig_evol.update_layout(
+            title="Volume de Entradas vs Taxa de Conformidade MoM",
+            yaxis=dict(title="Volume de NFs"),
+            yaxis2=dict(title="Percentual (%)", overlaying="y", side="right", range=[0, 100]),
+            legend=dict(x=0.01, y=1.15, orientation="h"),
+            margin=dict(t=40, b=20, l=20, r=20), height=400
+        )
+        st.plotly_chart(fig_evol, use_container_width=True)
 
-    fig_evol.update_layout(
-        title="Volume x Taxa de Retrabalho (Evolução MoM)",
-        yaxis=dict(title="Volume de NFs"),
-        yaxis2=dict(title="Percentual (%)", overlaying="y", side="right", range=[0, 100]),
-        legend=dict(x=0.01, y=1.15, orientation="h")
-    )
-    st.plotly_chart(fig_evol, use_container_width=True)
-
-# -----------------------------------------------------------------------------
-# ABA 5: MELHORIAS
-# -----------------------------------------------------------------------------
-elif selected_tab == "🎯 Melhorias":
-    st.title("🎯 Plano Priorizado de Melhorias Operacionais")
+# ---------------------------------------------------------------------
+# ABA 5: PLANO DE AÇÃO
+# ---------------------------------------------------------------------
+with t_acao:
+    st.subheader("🎯 Matriz Priorizada de Melhorias Contínuas")
     
     st.markdown("""
-    | Prioridade | Oportunidade / Causa Raiz | Impacto no Retrabalho | Ação Recomendada | Responsável |
+    | Prioridade | Oportunidade / Causa Raiz | Impacto Estimado | Ação Recomendada | Responsável |
     | :---: | :--- | :---: | :--- | :--- |
-    | 🔴 **Alta** | **Trava do Pedido de Compra na NF** | **56,5%** | Exigir o preenchimento obrigatório da tag `<xPed>` na validação do portal. | TI / Fiscal |
-    | 🔴 **Alta** | **Ajuste da Conta Integrador Compras** | **45,9%** | Corrigir a rotina de envio do robô para evitar emissão de ordens sem código no ERP. | Suporte Oracle |
-    | 🟡 **Média** | **Saneamento Cadastral de Fornecedores** | **9,5%** | Implementar consulta em tempo real da situação cadastral de parceiros no ERP. | Suprimentos |
+    | 🔴 **Alta** | **Exigência da Tag `<xPed>` no Portal** | **56,5%** | Ativar trava de pré-validação do pedido no portal de recepção fiscal. | TI / Fiscal |
+    | 🔴 **Alta** | **Ajuste da Conta Integrador Compras** | **45,9%** | Recalibrar robô de integração ERP Oracle para evitar pedidos sem código. | Suporte ERP |
+    | 🟡 **Média** | **Saneamento Cadastral de Fornecedores** | **9,5%** | Validação automatizada de status do CNPJ e Inscrição Estadual. | Suprimentos |
     """)
 
-# -----------------------------------------------------------------------------
-# ABA 6: ANÁLISES DA IA
-# -----------------------------------------------------------------------------
-elif selected_tab == "🧠 Análises da IA":
-    st.title("🧠 Trilha de Histórico de Análises da IA")
-
-    st.markdown("""
-    * **20/08/2026 — Processamento da Base Recente**
-      * **Registros Deteccionados:** +4.864 NFs
-      * **Deduplicação:** 12 registros duplicados descartados
-      * **Qualidade da Base:** 99.1% dos registros validados
-      * **Diagnóstico:** O indicador de retrabalho apresentou melhora de **3,6 p.p.** em relação ao mês anterior.
-    """)
-
-# -----------------------------------------------------------------------------
-# ABA 7: INTEGRAÇÃO
-# -----------------------------------------------------------------------------
-elif selected_tab == "⚙️ Integração":
-    st.title("⚙️ Status da Conexão com o Google Drive")
-
-    c1, c2 = st.columns(2)
-    with c1:
-        st.success("🟢 Google Drive: Conectado à pasta `/BASE_DE_ENTRADAS`")
-        st.write("**Último Arquivo Lido:** `Documentos_Fiscais_20260818.xlsx`")
-        st.write("**Data do ÚLtimo Sync:** 20/08/2026 09:00:00")
-        if st.button("🔄 Atualizar Agora (Sync Manual)"):
-            st.info("IA verificando novos arquivos no Google Drive...")
-            st.success("Processamento concluído! Base atualizada com sucesso.")
-
-    with c2:
-        st.subheader("⚠️ Área de Quarentena (Validação Pendente)")
-        st.warning("Existem **12 registros** aguardando correção cadastral do usuário (ex: CNPJ não localizado ou Data inválida).")
+# ---------------------------------------------------------------------
+# ABA 6: BASE DE DADOS & INTEGRAÇÃO
+# ---------------------------------------------------------------------
+with t_data:
+    st.subheader("⚙️ Dados Consolidados & Auditoria")
+    
+    c_d1, c_d2 = st.columns([3, 1])
+    with c_d1:
+        st.markdown(f"**Registros Exibidos:** {len(df_filtrado):,} de {len(df_master):,}")
+    with c_d2:
+        csv_data = df_filtrado.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Exportar Dados (CSV)",
+            data=csv_data,
+            file_name=f"export_estapar_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            mime="text/csv"
+        )
+        
+    st.dataframe(df_filtrado, use_container_width=True, height=450)
